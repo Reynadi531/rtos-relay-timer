@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RTOS Relay Configurator</title>
+  <style>
+    :root {
+      --bg-color: #0f172a;
+      --card-bg: #1e293b;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --danger: #ef4444;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --border: #334155;
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text);
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 30px;
+      width: 100%;
+      max-width: 1000px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    h1 { margin: 0; font-weight: 600; }
+
+    button {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.2s ease;
+    }
+
+    button:hover { background: var(--primary-hover); }
+    button:disabled { background: var(--border); cursor: not-allowed; }
+
+    .btn-connect { background: var(--success); font-size: 16px; padding: 12px 24px;}
+    .btn-disconnect { background: var(--danger); font-size: 16px; padding: 12px 24px; display: none; }
+    .btn-toggle { background: #475569; width: 100%; margin-bottom: 15px; }
+    .btn-toggle:hover { background: #64748b; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+      width: 100%;
+      max-width: 1200px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+      position: relative;
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .card-header h2 { margin: 0; font-size: 1.25rem; }
+
+    .status-badge {
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: bold;
+      background: var(--border);
+      color: var(--text-muted);
+    }
+    .status-badge.on { background: rgba(16, 185, 129, 0.2); color: var(--success); border: 1px solid var(--success);}
+    .status-badge.manual { background: rgba(239, 68, 68, 0.2); color: var(--danger); border: 1px solid var(--danger); }
+
+    .form-group {
+      margin-bottom: 15px;
+      background: rgba(0,0,0,0.1);
+      padding: 12px;
+      border-radius: 8px;
+    }
+
+    .form-group h3 {
+      margin: 0 0 10px 0;
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    label { display: block; font-size: 0.85rem; margin-bottom: 5px; color: var(--text-muted); }
+    
+    input {
+      width: calc(100% - 20px);
+      padding: 8px 10px;
+      margin-bottom: 10px;
+      background: var(--bg-color);
+      border: 1px solid var(--border);
+      color: white;
+      border-radius: 4px;
+      font-family: inherit;
+    }
+    
+    input:focus { outline: none; border-color: var(--primary); }
+
+    .flex-row { display: flex; gap: 10px; }
+    .flex-row > div { flex: 1; }
+
+    #log {
+      width: 100%;
+      max-width: 1200px;
+      height: 150px;
+      background: #000;
+      color: #0f0;
+      font-family: monospace;
+      padding: 10px;
+      margin-top: 20px;
+      overflow-y: auto;
+      border-radius: 8px;
+      box-sizing: border-box;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div>
+      <h1>RTOS Relay Configurator</h1>
+      <div id="connectionStatus" style="color: var(--text-muted); margin-top: 5px;">Status: Disconnected</div>
+    </div>
+    <div>
+      <button id="btnConnect" class="btn-connect">Connect to Nano</button>
+      <button id="btnDisconnect" class="btn-disconnect">Disconnect</button>
+    </div>
+  </header>
+
+  <div class="grid" id="relayGrid">
+    </div>
+
+  <div style="width: 100%; max-width: 1200px; margin-top: 20px;">
+    <button onclick="if(confirm('Are you sure you want to clear all schedules and turn off all relays?')) { sendCommand('C'); setTimeout(() => sendCommand('S'), 500); }" 
+            style="background: var(--danger); width: 100%; padding: 15px; font-size: 1.1rem; border-radius: 8px;">
+      Factory Reset / Clear All
+    </button>
+  </div>
+
+  <div id="log">Awaiting connection...</div>
+
+  <script>
+    const RELAY_COUNT = 4;
+    let port, reader, writer;
+    let keepReading = true;
+    let serialBuffer = "";
+    let statusInterval;
+
+    const grid = document.getElementById('relayGrid');
+    for (let i = 0; i < RELAY_COUNT; i++) {
+      grid.innerHTML += `
+        <div class="card" id="card-${i}">
+          <div class="card-header">
+            <h2>Relay ${i + 1}</h2>
+            <span class="status-badge" id="status-${i}">OFF</span>
+          </div>
+          <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 10px;">
+            Current Mode: <strong id="mode-${i}" style="color: var(--text);">Unknown</strong>
+          </div>
+          
+          <button class="btn-toggle" onclick="sendCommand('M ${i + 1}'); setTimeout(() => sendCommand('S'), 200);">Manual Latch Toggle</button>
+
+          <div class="form-group">
+            <h3>Fixed Schedule (24-Hour)</h3>
+            <div class="flex-row">
+              <div>
+                <label>Hour (0-23)</label>
+                <input type="number" id="f-hour-${i}" min="0" max="23" placeholder="HH">
+              </div>
+              <div>
+                <label>Min (0-59)</label>
+                <input type="number" id="f-min-${i}" min="0" max="59" placeholder="MM">
+              </div>
+              <div>
+                <label>Dur (Min)</label>
+                <input type="number" id="f-dur-${i}" min="1" placeholder="Mins">
+              </div>
+            </div>
+            <button style="width: 100%; margin-top: 5px;" onclick="setFixed(${i})">Save Fixed</button>
+          </div>
+
+          <div class="form-group">
+            <h3>Interval Schedule</h3>
+            <div class="flex-row">
+              <div>
+                <label>Interval (Secs)</label>
+                <input type="number" id="i-inv-${i}" min="1">
+              </div>
+              <div>
+                <label>Duration (Secs)</label>
+                <input type="number" id="i-dur-${i}" min="1">
+              </div>
+            </div>
+            <button style="width: 100%" onclick="setIntervalCmd(${i})">Save Interval</button>
+          </div>
+        </div>
+      `;
+    }
+
+    const logEl = document.getElementById('log');
+    function log(msg) {
+      logEl.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    document.getElementById('btnConnect').addEventListener('click', async () => {
+      try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 9600 });
+        
+        document.getElementById('btnConnect').style.display = 'none';
+        document.getElementById('btnDisconnect').style.display = 'inline-block';
+        document.getElementById('connectionStatus').innerText = "Status: Connected";
+        document.getElementById('connectionStatus').style.color = "var(--success)";
+        log("Connected to Serial Port.");
+
+        keepReading = true;
+        readLoop();
+
+        statusInterval = setInterval(() => { sendCommand("S"); }, 2500);
+        sendCommand("S"); 
+
+      } catch (err) {
+        log("Error connecting: " + err.message);
+      }
+    });
+
+    document.getElementById('btnDisconnect').addEventListener('click', async () => {
+      keepReading = false;
+      clearInterval(statusInterval);
+      if (reader) await reader.cancel();
+      if (port) await port.close();
+      
+      document.getElementById('btnConnect').style.display = 'inline-block';
+      document.getElementById('btnDisconnect').style.display = 'none';
+      document.getElementById('connectionStatus').innerText = "Status: Disconnected";
+      document.getElementById('connectionStatus').style.color = "var(--text-muted)";
+      log("Disconnected.");
+    });
+
+    async function readLoop() {
+      const decoder = new TextDecoderStream();
+      const inputDone = port.readable.pipeTo(decoder.writable);
+      reader = decoder.readable.getReader();
+
+      try {
+        while (keepReading) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) {
+            serialBuffer += value;
+            processBuffer();
+          }
+        }
+      } catch (error) {
+        log("Read error: " + error);
+      } finally {
+        reader.releaseLock();
+      }
+    }
+
+    function processBuffer() {
+      if (serialBuffer.includes('[') && serialBuffer.includes(']')) {
+        let start = serialBuffer.indexOf('[');
+        let end = serialBuffer.indexOf(']', start) + 1;
+        let jsonStr = serialBuffer.substring(start, end);
+        
+        try {
+          let data = JSON.parse(jsonStr);
+          updateUI(data);
+        } catch (e) {}
+        serialBuffer = serialBuffer.substring(end);
+      } else if (serialBuffer.length > 1000) {
+         let lines = serialBuffer.split('\n');
+         serialBuffer = lines[lines.length - 1]; 
+      }
+    }
+
+    async function sendCommand(cmd) {
+      if (!port || !port.writable) return;
+      log(`Sent: ${cmd}`);
+      const encoder = new TextEncoder();
+      writer = port.writable.getWriter();
+      await writer.write(encoder.encode(cmd + "\n"));
+      writer.releaseLock();
+    }
+
+    function setFixed(index) {
+      const hVal = document.getElementById(`f-hour-${index}`).value;
+      const mVal = document.getElementById(`f-min-${index}`).value;
+      const dVal = document.getElementById(`f-dur-${index}`).value;
+      
+      if (hVal === "" || mVal === "" || !dVal) { alert("Please fill Hour, Minute, and Duration."); return; }
+      
+      const h = parseInt(hVal);
+      const m = parseInt(mVal);
+
+      if (h < 0 || h > 23 || m < 0 || m > 59) {
+        alert("Invalid Time: Hour must be 0-23, Minute must be 0-59.");
+        return;
+      }
+
+      sendCommand(`F ${index + 1} ${h} ${m} ${dVal}`);
+      setTimeout(() => sendCommand("S"), 500);
+    }
+
+    function setIntervalCmd(index) {
+      const invVal = document.getElementById(`i-inv-${index}`).value;
+      const durVal = document.getElementById(`i-dur-${index}`).value;
+      if (!invVal || !durVal) { alert("Please fill both interval and duration."); return; }
+      
+      sendCommand(`I ${index + 1} ${invVal} ${durVal}`);
+      setTimeout(() => sendCommand("S"), 500); 
+    }
+
+    function updateUI(relays) {
+      relays.forEach((relay, i) => {
+        const badge = document.getElementById(`status-${i}`);
+        if (relay.isON) {
+          if (relay.isManualOverride) {
+            badge.className = "status-badge manual";
+            badge.innerText = "MANUAL ON";
+          } else {
+            badge.className = "status-badge on";
+            badge.innerText = "AUTO ON";
+          }
+        } else {
+          badge.className = "status-badge";
+          badge.innerText = "OFF";
+        }
+
+        const modeText = document.getElementById(`mode-${i}`);
+        if (relay.mode === 1) modeText.innerText = `FIXED (${String(relay.onHour).padStart(2, '0')}:${String(relay.onMinute).padStart(2, '0')})`;
+        else if (relay.mode === 2) modeText.innerText = "INTERVAL";
+        else modeText.innerText = "UNCONFIGURED";
+      });
+    }
+  </script>
+</body>
+</html>
