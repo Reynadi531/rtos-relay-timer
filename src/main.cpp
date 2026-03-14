@@ -38,6 +38,7 @@ void TaskSerialMonitor(void *pvParameters);
 void TaskRelayControl(void *pvParameters);
 void saveConfigToEEPROM();
 void loadConfigFromEEPROM();
+void checkMissedSchedules();
 
 void setup() {
   Serial.begin(9600);
@@ -68,6 +69,8 @@ void setup() {
     digitalWrite(relays[i].pin, LOW);
   }
 
+  checkMissedSchedules();
+
   configMutex = xSemaphoreCreateMutex();
 
   if (configMutex != NULL) {
@@ -94,13 +97,50 @@ void loadConfigFromEEPROM() {
     EEPROM.get(EEPROM_START_ADDR + 1, relays);
     for (int i = 0; i < RELAY_COUNT; i++) {
       relays[i].isON = false;
-      relays[i].lastOnEpoch = 0;
-      relays[i].nextIntervalEpoch = 0;
       relays[i].isManualOverride = false; 
     }
     Serial.println(F("Loaded schedules from EEPROM."));
   } else {
     Serial.println(F("No saved data found. Saving defaults to EEPROM."));
+    saveConfigToEEPROM();
+  }
+}
+
+void checkMissedSchedules() {
+  DateTime now = rtc.now();
+  uint32_t currentEpoch = now.unixtime();
+  bool anyFired = false;
+
+  for (int i = 0; i < RELAY_COUNT; i++) {
+    if (relays[i].mode == MODE_FIXED) {
+      // Build today's scheduled epoch: today's date at onHour:onMinute:00
+      DateTime todayScheduled(now.year(), now.month(), now.day(),
+                              relays[i].onHour, relays[i].onMinute, 0);
+      uint32_t todaySchedEpoch = todayScheduled.unixtime();
+
+      // Catch up if: schedule time already passed today AND relay didn't fire after that time
+      if (currentEpoch > todaySchedEpoch && relays[i].lastOnEpoch < todaySchedEpoch) {
+        relays[i].isON = true;
+        relays[i].lastOnEpoch = currentEpoch;
+        digitalWrite(relays[i].pin, HIGH);
+        Serial.print(F("Catch-up: Turning ON Relay ")); Serial.println(i + 1);
+        anyFired = true;
+      }
+    }
+    else if (relays[i].mode == MODE_INTERVAL) {
+      // Catch up if: a next interval was scheduled and we've passed it
+      if (relays[i].nextIntervalEpoch != 0 && currentEpoch >= relays[i].nextIntervalEpoch) {
+        relays[i].isON = true;
+        relays[i].lastOnEpoch = currentEpoch;
+        relays[i].nextIntervalEpoch = currentEpoch + relays[i].intervalSecs;
+        digitalWrite(relays[i].pin, HIGH);
+        Serial.print(F("Catch-up: Turning ON Relay ")); Serial.println(i + 1);
+        anyFired = true;
+      }
+    }
+  }
+
+  if (anyFired) {
     saveConfigToEEPROM();
   }
 }
@@ -148,6 +188,7 @@ void TaskRelayControl(void *pvParameters) {
             relays[i].lastOnEpoch = currentEpoch;
             digitalWrite(relays[i].pin, HIGH);
             Serial.print(F("Turning ON Relay ")); Serial.println(i + 1);
+            saveConfigToEEPROM();
           }
         }
       }
